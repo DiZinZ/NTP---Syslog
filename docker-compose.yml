@@ -1,0 +1,86 @@
+# Laboratório 15 – NTP + Syslog  |  CIC1001 A03 – Redes 2
+# Sobe tudo com:  docker compose up -d --build
+name: lab-ntp-syslog
+
+networks:
+  labnet:
+    name: labnet
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.15.0/24      # rede 172.20.15.0 | máscara 255.255.255.0 | broadcast 172.20.15.255 | 254 hosts úteis
+          gateway: 172.20.15.1
+
+x-node: &node
+  build: ./image
+  image: lab-ntp-syslog:1.0
+  restart: unless-stopped
+  networks: [labnet]
+  volumes: &node-volumes
+    - ./scripts/node-entrypoint.sh:/scripts/node-entrypoint.sh:ro
+    - ./pcap:/pcap
+
+services:
+  # ---------- Servidor NTP (chrony) ----------
+  ntp-server:
+    <<: *node
+    container_name: ntp-server
+    hostname: ntp-server
+    environment: { ROLE: ntp-server }
+    networks:
+      labnet: { ipv4_address: 172.20.15.10 }
+    ports:
+      - "1123:123/udp"               # NTP (123 do container -> 1123 no host, evita conflito com o Windows Time)
+    volumes:
+      - ./scripts/node-entrypoint.sh:/scripts/node-entrypoint.sh:ro
+      - ./pcap:/pcap
+      - ./config/chrony-server.conf:/etc/chrony/chrony.conf:ro
+      - ./config/rsyslog-client-5424.conf:/etc/rsyslog.conf:ro
+    depends_on: [log-server]
+
+  # ---------- Servidor de logs centralizado (rsyslog) ----------
+  log-server:
+    <<: *node
+    container_name: log-server
+    hostname: log-server
+    environment: { ROLE: log-server }
+    networks:
+      labnet: { ipv4_address: 172.20.15.20 }
+    ports:
+      - "1514:514/udp"               # Syslog UDP
+      - "1514:514/tcp"               # Syslog TCP
+    volumes:
+      - ./scripts/node-entrypoint.sh:/scripts/node-entrypoint.sh:ro
+      - ./pcap:/pcap
+      - ./config/rsyslog-server.conf:/etc/rsyslog.conf:ro
+      - ./config/chrony-client.conf:/etc/chrony/chrony.conf:ro   # log-server também sincroniza com o ntp-server
+      - ./logs:/var/log/remote       # logs recebidos ficam visíveis no host
+
+  # ---------- Clientes ----------
+  client1:
+    <<: *node
+    container_name: client1
+    hostname: client1
+    environment: { ROLE: client }
+    networks:
+      labnet: { ipv4_address: 172.20.15.31 }
+    volumes:
+      - ./scripts/node-entrypoint.sh:/scripts/node-entrypoint.sh:ro
+      - ./pcap:/pcap
+      - ./config/chrony-client.conf:/etc/chrony/chrony.conf:ro
+      - ./config/rsyslog-client-3164.conf:/etc/rsyslog.conf:ro   # formato clássico RFC 3164
+    depends_on: [ntp-server, log-server]
+
+  client2:
+    <<: *node
+    container_name: client2
+    hostname: client2
+    environment: { ROLE: client }
+    networks:
+      labnet: { ipv4_address: 172.20.15.32 }
+    volumes:
+      - ./scripts/node-entrypoint.sh:/scripts/node-entrypoint.sh:ro
+      - ./pcap:/pcap
+      - ./config/chrony-client.conf:/etc/chrony/chrony.conf:ro
+      - ./config/rsyslog-client-5424.conf:/etc/rsyslog.conf:ro   # formato moderno RFC 5424
+    depends_on: [ntp-server, log-server]
